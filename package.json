@@ -1,0 +1,32 @@
+{
+  "name": "aegis",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.20.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "tsc -b --clean",
+    "test": "vitest run",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "agent:install": "uv sync --directory apps/agent",
+    "agent:test": "uv run --directory apps/agent pytest",
+    "agent:lint": "uv run --directory apps/agent ruff check .",
+    "classifier:install": "uv sync --directory apps/classifier",
+    "classifier:serve": "uv run --directory apps/classifier uvicorn aegis_classifier.service:app --port 3100",
+    "classifier:test": "uv run --directory apps/classifier pytest",
+    "classifier:lint": "uv run --directory apps/classifier ruff check ."
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "eslint": "^10.10.0",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.1",
+    "vitest": "^5.0.0"
+  }
+}

@@ -1,0 +1,6 @@
+packages:
+  - apps/gateway
+  - apps/mcp-server
+  - packages/*
+allowBuilds:
+  esbuild: set this to true or false

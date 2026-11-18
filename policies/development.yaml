@@ -1,0 +1,27 @@
+# Authorization policy: which decision applies when a role requests a tool.
+# auto    - execute after validation
+# approve - hold for human approval, do not execute
+# deny    - refuse
+# A role or tool that is absent from this file is denied.
+roles:
+  support_agent:
+    tools:
+      get_payment_status: auto
+      get_github_issue: auto
+      github_create_issue: approve
+      send_email: deny
+
+  admin_agent:
+    tools:
+      get_payment_status: auto
+      get_github_issue: auto
+      github_create_issue: approve
+      send_email: approve
+
+# Tool output is always fenced and labelled untrusted. These thresholds decide when the
+# injection classifier's score also flags or withholds it. Starting points, to be tuned
+# against the evaluation datasets.
+output_screening:
+  flag_threshold: 0.5
+  block_threshold: 0.9
+  on_error: block
