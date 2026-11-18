@@ -38,10 +38,11 @@ describe('auto-executed calls', () => {
     expect(result.structuredContent).toMatchObject({ status: 'succeeded' })
     expect(result._meta?.['aegis/effect']).toBe('READ_ONLY')
     expect(upstreamCall).toHaveBeenCalledTimes(1)
-    expect(upstreamCall).toHaveBeenCalledWith({
-      name: 'get_payment_status',
-      arguments: { transaction_id: 'txn_3ab21f9c' },
-    })
+    expect(upstreamCall).toHaveBeenCalledWith(
+      { name: 'get_payment_status', arguments: { transaction_id: 'txn_3ab21f9c' } },
+      undefined,
+      expect.objectContaining({ timeout: expect.any(Number) }),
+    )
   })
 })
 

@@ -13,7 +13,19 @@ export type ApprovalCache = {
 }
 
 export async function connectCache(url: string): Promise<ApprovalCache> {
-  const client = createClient({ url })
+  const client = createClient({
+    url,
+    // Give up reconnecting after a few tries so a persistently-down Redis makes operations
+    // fail fast (and be swallowed) instead of queueing; without this, connect() would retry
+    // forever and block gateway startup.
+    disableOfflineQueue: true,
+    socket: {
+      connectTimeout: 2_000,
+      reconnectStrategy: (retries) =>
+        retries >= 5 ? new Error('redis unavailable') : Math.min(retries * 100, 500),
+    },
+  })
+  // The error event is expected while Redis is unreachable; log once per failure, non-fatal.
   client.on('error', (error: unknown) => {
     process.stderr.write(`approval cache error: ${String(error)}\n`)
   })

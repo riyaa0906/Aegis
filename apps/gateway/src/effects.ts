@@ -17,7 +17,3 @@ const TOOL_EFFECTS: Readonly<Record<string, ToolEffect>> = {
 export function effectOf(toolName: string): ToolEffect | undefined {
   return TOOL_EFFECTS[toolName]
 }
-
-export function classifiedTools(): readonly string[] {
-  return Object.keys(TOOL_EFFECTS)
-}

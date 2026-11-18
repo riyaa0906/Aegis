@@ -50,9 +50,19 @@ async function openApprovals(): Promise<ApprovalStore | null> {
   const databaseUrl = process.env.AEGIS_DATABASE_URL
   if (!databaseUrl) return null
   const redisUrl = process.env.AEGIS_REDIS_URL
+  let cache = null
+  if (redisUrl) {
+    // Redis is only a lookup cache; Postgres is authoritative. If it is unreachable at
+    // startup the gateway still runs, just without the cache.
+    try {
+      cache = await connectCache(redisUrl)
+    } catch (error) {
+      process.stderr.write(`approval cache unavailable, continuing without it: ${String(error)}\n`)
+    }
+  }
   return ApprovalStore.open(databaseUrl, {
     timeoutMs: Number(process.env.AEGIS_APPROVAL_TIMEOUT_MS ?? DEFAULT_APPROVAL_TIMEOUT_MS),
-    cache: redisUrl ? await connectCache(redisUrl) : null,
+    cache,
   })
 }
 

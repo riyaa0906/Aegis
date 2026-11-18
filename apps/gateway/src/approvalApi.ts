@@ -48,9 +48,20 @@ export async function handleApprovalRequest(
   return false
 }
 
+const MAX_BODY_BYTES = 64 * 1024
+
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = []
-  for await (const chunk of req) chunks.push(chunk as Buffer)
+  let size = 0
+  for await (const chunk of req) {
+    size += (chunk as Buffer).length
+    // Bound the read so a decision request cannot exhaust memory.
+    if (size > MAX_BODY_BYTES) {
+      req.destroy()
+      return {}
+    }
+    chunks.push(chunk as Buffer)
+  }
   if (chunks.length === 0) return {}
   try {
     const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'))

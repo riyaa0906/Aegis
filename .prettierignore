@@ -2,3 +2,6 @@ dist/
 pnpm-lock.yaml
 uv.lock
 **/.venv/
+evaluations/injections/
+evaluations/benign/
+evaluations/results/

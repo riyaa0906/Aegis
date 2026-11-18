@@ -90,7 +90,14 @@ export class ApprovalStore {
   ) {}
 
   static async open(databaseUrl: string, options: ApprovalStoreOptions): Promise<ApprovalStore> {
-    const store = new ApprovalStore(new Pool({ connectionString: databaseUrl }), options)
+    const pool = new Pool({ connectionString: databaseUrl })
+    // Without this listener, an error on an idle pooled connection (e.g. Postgres going
+    // away) is an unhandled 'error' event and crashes the process. Individual queries still
+    // reject and are handled per-request, so this just keeps the gateway alive to fail closed.
+    pool.on('error', (error) => {
+      process.stderr.write(`approval store connection error: ${String(error)}\n`)
+    })
+    const store = new ApprovalStore(pool, options)
     await store.pool.query(SCHEMA)
     return store
   }

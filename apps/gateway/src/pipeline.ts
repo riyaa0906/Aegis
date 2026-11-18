@@ -22,6 +22,11 @@ export type GatewayContext = {
   classifier?: Classifier | null
 }
 
+// Upstream calls get an explicit deadline rather than relying on the SDK default, so a hung
+// MCP server cannot hold a gateway request open indefinitely.
+const CALL_TIMEOUT_MS = Number(process.env.AEGIS_MCP_CALL_TIMEOUT_MS ?? 30_000)
+const LIST_TIMEOUT_MS = Number(process.env.AEGIS_MCP_LIST_TIMEOUT_MS ?? 10_000)
+
 function refuse(
   code: AegisErrorCode,
   message: string,
@@ -40,7 +45,7 @@ const upstreamToolCache = new WeakMap<Client, Tool[]>()
 async function upstreamTools(upstream: Client): Promise<Tool[]> {
   const cached = upstreamToolCache.get(upstream)
   if (cached) return cached
-  const { tools } = await upstream.listTools()
+  const { tools } = await upstream.listTools(undefined, { timeout: LIST_TIMEOUT_MS })
   upstreamToolCache.set(upstream, tools)
   return tools
 }
@@ -49,6 +54,29 @@ async function upstreamTools(upstream: Client): Promise<Tool[]> {
 export async function listAllowedTools(ctx: GatewayContext): Promise<Tool[]> {
   const tools = await upstreamTools(ctx.upstream)
   return tools.filter((tool) => authorize(ctx.policy, ctx.identity, tool.name).decision !== 'deny')
+}
+
+/**
+ * Calls the MCP server with a deadline. A READ_ONLY tool is retried once on a transport
+ * failure because it has no side effect; a WRITE tool is never retried, so a timed-out
+ * write is not silently duplicated.
+ */
+async function callUpstream(
+  upstream: Client,
+  name: string,
+  args: Record<string, unknown>,
+  effect: ToolEffect,
+): Promise<CallToolResult> {
+  const attempt = () =>
+    upstream.callTool({ name, arguments: args }, undefined, {
+      timeout: CALL_TIMEOUT_MS,
+    }) as Promise<CallToolResult>
+  try {
+    return await attempt()
+  } catch (error) {
+    if (effect !== 'READ_ONLY') throw error
+    return attempt()
+  }
 }
 
 /**
@@ -67,7 +95,7 @@ async function execute(
     'aegis.execute',
     { 'aegis.tool': name, 'aegis.effect': effect },
     async (span) => {
-      const executed = (await ctx.upstream.callTool({ name, arguments: args })) as CallToolResult
+      const executed = await callUpstream(ctx.upstream, name, args, effect)
       span.setAttribute('aegis.upstream_error', executed.isError === true)
       return executed
     },
@@ -121,19 +149,29 @@ async function gateOnApproval(
     return refuse('APPROVAL_REQUIRED', `"${name}" requires approval, which is not configured`)
   }
 
-  const outcome = await withSpan(
-    'aegis.approval',
-    { 'aegis.tool': name, 'aegis.effect': effect },
-    async (span) => {
-      const resolved = await ctx.approvals!.resolve(identity, name, args, effect)
-      span.setAttributes({
-        'aegis.approval_request_id': resolved.record.request_id,
-        'aegis.approval_outcome': resolved.kind,
-        'aegis.approval_status': resolved.record.status,
-      })
-      return resolved
-    },
-  )
+  let outcome
+  try {
+    outcome = await withSpan(
+      'aegis.approval',
+      { 'aegis.tool': name, 'aegis.effect': effect },
+      async (span) => {
+        const resolved = await ctx.approvals!.resolve(identity, name, args, effect)
+        span.setAttributes({
+          'aegis.approval_request_id': resolved.record.request_id,
+          'aegis.approval_outcome': resolved.kind,
+          'aegis.approval_status': resolved.record.status,
+        })
+        return resolved
+      },
+    )
+  } catch (error) {
+    // The approval store is unreachable. Fail closed: an irreversible tool must not run
+    // when its decision cannot be recorded or looked up.
+    return refuse(
+      'APPROVAL_REQUIRED',
+      `"${name}" requires approval, but the approval store is unavailable: ${String(error)}`,
+    )
+  }
   const record = outcome.record
   audit('approval', {
     tool: name,
@@ -180,17 +218,27 @@ async function gateOnApproval(
         _meta: { ...approvalMeta(record), 'aegis/replayed': true },
       }
 
-    case 'approved':
+    case 'approved': {
+      let result: CallToolResult
       try {
-        const result = await execute(ctx, name, args, effect, record.request_id, {
+        result = await execute(ctx, name, args, effect, record.request_id, {
           'aegis/approved_by': record.decided_by,
         })
-        await ctx.approvals.markCompleted(record.request_id, result)
-        return result
       } catch (error) {
-        await ctx.approvals.markFailed(record.request_id, String(error))
+        // The claimed request stays out of the way of a retry: the row is left 'executing',
+        // so a repeat resolves to 'in_progress' rather than running the tool a second time.
+        await ctx.approvals.markFailed(record.request_id, String(error)).catch(() => {})
         return refuse('TOOL_EXECUTION_FAILED', `call to "${name}" failed: ${String(error)}`)
       }
+      // The irreversible action has already run. A failure to record completion must not
+      // turn a success into a reported failure, so it is best-effort and logged only.
+      await ctx.approvals.markCompleted(record.request_id, result).catch((error: unknown) => {
+        process.stderr.write(
+          `failed to record completion of ${record.request_id}: ${String(error)}\n`,
+        )
+      })
+      return result
+    }
   }
 }
 
@@ -367,6 +415,18 @@ export async function callTool(
             refuse('MCP_CONNECTION_ERROR', `call to "${name}" failed: ${String(error)}`),
           )
         }
+      } catch (error) {
+        // Last-resort fail-closed net: any unexpected error in the request path (a dependency
+        // failing, listTools timing out) becomes a structured refusal, never an unhandled
+        // rejection and never a leaked stack trace. The action did not run.
+        span.setStatus({ code: SpanStatusCode.ERROR, message: String(error) })
+        return conclude(
+          span,
+          startedAt,
+          requestId,
+          name,
+          refuse('TOOL_EXECUTION_FAILED', `request for "${name}" could not be completed safely`),
+        )
       } finally {
         span.end()
       }
